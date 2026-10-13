@@ -19,4 +19,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # คำสั่งสำหรับเริ่มรันบอท
-CMD ["python", "ttt.py"]
+CMD ["python", "ttt-2.py"]
