@@ -1,1 +1,1 @@
-web: python ttt.py
+web: python ttt-2.py
