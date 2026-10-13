@@ -85,14 +85,14 @@ def get_thai_dates():
     return date_str, due_date_str, now.strftime("%Y-%m-%d")
 
 def thai_baht_text(amount):
-    """ ฟังก์ชันแปลงตัวเลขเป็นข้อความบาทไทย ป้องกันปัญหา #NAME? """
+    """ ฟังก์ชันแปลงตัวเลขเป็นข้อความบาทไทย """
     if amount is None:
         return "(ศูนย์บาทถ้วน)"
     num_text = ["ศูนย์", "หนึ่ง", "สอง", "สาม", "สี่", "ห้า", "หก", "เจ็ด", "แปด", "เก้า"]
     unit_text = ["", "สิบ", "ร้อย", "พัน", "หมื่น", "แสน", "ล้าน"]
     try:
         amount_str = f"{float(amount):.2f}"
-        baht_part, _ = amount_str.split('.')
+        baht_part, satang_part = amount_str.split('.')
         
         def convert_chunk(n_str):
             result = ""
@@ -113,9 +113,23 @@ def thai_baht_text(amount):
             return result
 
         baht_words = convert_chunk(baht_part)
+        satang_words = convert_chunk(satang_part) if satang_part != "00" else ""
+        
+        if satang_words:
+            return f"({baht_words}บาท{satang_words}สตางค์)" if baht_words else f"({satang_words}สตางค์)"
         return f"({baht_words}บาทถ้วน)" if baht_words else "(ศูนย์บาทถ้วน)"
     except:
         return "(ศูนย์บาทถ้วน)"
+
+def fix_bahttext_formulas_in_sheet(ws, total_amount):
+    """ ค้นหาเซลล์ทุกเซลล์ที่มีสูตร BAHTTEXT แล้วแทนค่าด้วยข้อความบาทไทยที่ถูกต้อง """
+    text_baht = thai_baht_text(total_amount)
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str):
+                val_upper = cell.value.upper()
+                if "BAHTTEXT" in val_upper or "#NAME?" in val_upper:
+                    cell.value = text_baht
 
 try:
     from pdf2image import convert_from_path
@@ -144,7 +158,7 @@ def make_borderless_pdf_and_png(raw_pdf, final_pdf, final_png, png_dpi=200):
     img = Image.new('RGB', (800, 1100), color=(255, 255, 255))
     img.save(final_png, "PNG")
 
-BOT_VERSION = "v4-render-noname-fix"
+BOT_VERSION = "v4-auto-fix-bahttext"
 CONVERT_STATUS = {}
 
 def status_line(doc_number):
@@ -334,6 +348,9 @@ async def handle_quotation_callback(update: Update, context: ContextTypes.DEFAUL
         ws['F21'] = data['qty']
         ws['G21'] = data['price_per_unit']
 
+        subtotal = data['qty'] * data['price_per_unit']
+        total_val = (subtotal * 1.07) if data.get('use_vat', True) else subtotal
+
         if not data.get('use_vat', True):
             ws['H34'] = 0
         else:
@@ -341,6 +358,9 @@ async def handle_quotation_callback(update: Update, context: ContextTypes.DEFAUL
 
         if data['remarks'] != "-" and data['remarks'].strip() != "":
             ws['B33'] = f"หมายเหตุ : {data['remarks']}"
+
+        # เคลียร์สูตร BAHTTEXT ทั้งหมดในชีทเสนอราคา
+        fix_bahttext_formulas_in_sheet(ws, total_val)
 
         temp_excel = f"temp_{doc_number}.xlsx"
         wb.save(temp_excel)
@@ -552,9 +572,6 @@ async def handle_invoice_callback(update: Update, context: ContextTypes.DEFAULT_
         ws['H20'] = data['price_per_unit']
         ws['J36'] = paid_amt
 
-        # แก้ไขปัญหา #NAME? โดยการใส่ข้อความภาษาไทยแทนสูตร BAHTTEXT
-        ws['B29'] = thai_baht_text(total_val)
-
         remark_val = data.get('remarks', '-').strip()
         if remark_val != "-" and remark_val != "":
             ws['C29'] = remark_val
@@ -569,6 +586,9 @@ async def handle_invoice_callback(update: Update, context: ContextTypes.DEFAULT_
                 if cell.value and isinstance(cell.value, str) and ("ชำระก่อน" in cell.value or "ชำระ" in cell.value):
                     if "(" in cell.value and "%" in cell.value:
                         cell.value = f"ชำระก่อน ({pct}%)"
+
+        # เคลียร์และเขียนทับสูตร BAHTTEXT ทั้งหมดในชีทอินวอย
+        fix_bahttext_formulas_in_sheet(ws, total_val)
 
         temp_excel = f"temp_inv_{doc_number}.xlsx"
         wb.save(temp_excel)
@@ -787,10 +807,6 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
 
         ws['I32'] = paid_amt
 
-        # แก้ไขปัญหา #NAME? โดยการใส่ข้อความภาษาไทยแทนสูตร BAHTTEXT ในใบเสร็จ
-        total_full_val = (subtotal * 1.07) if use_vat else subtotal
-        ws['B29'] = thai_baht_text(total_full_val)
-
         formatted_amt = f"{paid_amt:,.2f}"
         ws['C30'] = f"**ลูกค้าชำระยอด {pct}% จากยอดเต็มเป็นจำนวนเงิน {formatted_amt} บาท**"
 
@@ -799,6 +815,10 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
                 if cell.value and isinstance(cell.value, str) and ("ชำระก่อน" in cell.value or "ชำระ" in cell.value):
                     if "(" in cell.value and "%" in cell.value:
                         cell.value = f"ชำระ ({pct}%)"
+
+        # เคลียร์และเขียนทับสูตร BAHTTEXT ทั้งหมดในชีทรับเงิน
+        total_full_val = (subtotal * 1.07) if use_vat else subtotal
+        fix_bahttext_formulas_in_sheet(ws, total_full_val)
 
         temp_excel = f"temp_rec_{doc_number}.xlsx"
         wb.save(temp_excel)
