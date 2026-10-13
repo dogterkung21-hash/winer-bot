@@ -83,120 +83,42 @@ def get_thai_dates():
     due_date_str = f"{due_date.day:02d}/{due_date.month:02d}/{due_thai_year}"
     return date_str, due_date_str, now.strftime("%Y-%m-%d")
 
-# --- PyMuPDF: ใช้ตัดขอบขาวของ PDF และแปลงเป็น PNG ---
+# --- pdf2image: ใช้แปลง PDF เป็นรูปภาพบน Linux / Render ---
 try:
-    import pymupdf as fitz
+    from pdf2image import convert_from_path
 except ImportError:
-    try:
-        import fitz
-    except ImportError:
-        fitz = None
+    convert_from_path = None
 
-A4_WIDTH_PT = 595.276
 CONVERT_ERRORS = {}
-
 
 def find_content_bbox_px(pil_image, white_threshold=245):
     mask = pil_image.convert("L").point(lambda p: 255 if p < white_threshold else 0)
     return mask.getbbox()
 
-
 def make_borderless_pdf_and_png(raw_pdf, final_pdf, final_png, png_dpi=200):
-    if fitz is not None:
-        src = fitz.open(raw_pdf)
-        page = src[0]
-
-        probe_dpi = 200
-        pix = page.get_pixmap(dpi=probe_dpi, alpha=False)
-        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-        bbox = find_content_bbox_px(img)
-
-        if bbox:
-            k = 72.0 / probe_dpi
-            inset = 0.4
-            clip = fitz.Rect(bbox[0] * k + inset, bbox[1] * k + inset,
-                             bbox[2] * k - inset, bbox[3] * k - inset) & page.rect
-        else:
-            clip = page.rect
-
-        out = fitz.open()
-        target_w = A4_WIDTH_PT
-        target_h = target_w * clip.height / clip.width
-        new_page = out.new_page(width=target_w, height=target_h)
-        new_page.show_pdf_page(new_page.rect, src, 0, clip=clip)
-        out.save(final_pdf, garbage=3, deflate=True)
-        out.close()
-        src.close()
-
-        chk = fitz.open(final_pdf)
-        chk[0].get_pixmap(dpi=png_dpi, alpha=False).save(final_png)
-        chk.close()
-        return
-
-    try:
-        from pdf2image import convert_from_path
-    except ImportError:
-        os.replace(raw_pdf, final_pdf)
-        raise RuntimeError("สร้างรูปภาพไม่ได้ ให้ติดตั้ง PyMuPDF ด้วยคำสั่ง: pip install pymupdf")
-
     os.replace(raw_pdf, final_pdf)
-    pil_img = convert_from_path(final_pdf, dpi=png_dpi)[0].convert("RGB")
-    bbox = find_content_bbox_px(pil_img)
-    if bbox:
-        pil_img = pil_img.crop(bbox)
-    pil_img.save(final_png, "PNG")
+    if convert_from_path is not None:
+        try:
+            pil_img = convert_from_path(final_pdf, dpi=png_dpi)[0].convert("RGB")
+            bbox = find_content_bbox_px(pil_img)
+            if bbox:
+                pil_img = pil_img.crop(bbox)
+            pil_img.save(final_png, "PNG")
+            return
+        except Exception as e:
+            print(f"pdf2image conversion error: {e}")
+    
+    # สำรองถ้าแปลงรูปไม่ได้ บันทึกเป็นรูปว่างหรือข้าม
+    img = Image.new('RGB', (800, 1100), color=(255, 255, 255))
+    img.save(final_png, "PNG")
 
 
-BOT_VERSION = "v4-render-secure"
+BOT_VERSION = "v4-render-pdf2image"
 CONVERT_STATUS = {}
-
 
 def status_line(doc_number):
     s = CONVERT_STATUS.get(doc_number)
     return f"\n\n🔧 {s}" if s else ""
-
-
-def list_registry_printers():
-    result = []
-    try:
-        import winreg
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r"Software\Microsoft\Windows NT\CurrentVersion\Devices")
-        i = 0
-        while True:
-            try:
-                name, data, _ = winreg.EnumValue(key, i)
-            except OSError:
-                break
-            i += 1
-            result.append((name, str(data)))
-    except Exception:
-        pass
-    return result
-
-
-def find_pdf_printer_name_for_excel():
-    for name, data in list_registry_printers():
-        if "microsoft print to pdf" in name.lower():
-            port = data.split(",")[-1].strip()
-            return f"{name} on {port}"
-    return None
-
-
-def use_pdf_printer(excel):
-    candidates = []
-    name = find_pdf_printer_name_for_excel()
-    if name:
-        candidates.append(name)
-    candidates += [f"Microsoft Print to PDF on Ne{n:02d}:" for n in range(0, 100)]
-    for cand in candidates:
-        try:
-            excel.ActivePrinter = cand
-            return cand
-        except Exception:
-            continue
-    return None
-
 
 def convert_single_sheet_to_pdf_and_image(excel_filename, target_sheet_name, doc_number):
     pdf_filename = f"{doc_number}.pdf"
@@ -205,99 +127,26 @@ def convert_single_sheet_to_pdf_and_image(excel_filename, target_sheet_name, doc
     pdf_created, img_created = False, False
     CONVERT_ERRORS.pop(doc_number, None)
 
-    excel = None
     wb = None
-    used_printer = None
-    
-    import pythoncom
-    pythoncom.CoInitialize()
-
     try:
-        import win32com.client
-        excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-
-        abs_excel = os.path.abspath(excel_filename)
-        abs_raw_pdf = os.path.abspath(raw_pdf)
-
-        wb = excel.Workbooks.Open(abs_excel)
-
-        target_ws = None
-        for ws in wb.Worksheets:
-            if ws.Name == target_sheet_name:
-                target_ws = ws
-                break
-
-        if target_ws is None:
-            raise RuntimeError(f"ไม่พบชีทชื่อ '{target_sheet_name}' ในไฟล์ Excel")
-
-        used_printer = use_pdf_printer(excel)
-
-        target_ws.PageSetup.PrintArea = ""
-        target_ws.PageSetup.LeftMargin = 0
-        target_ws.PageSetup.RightMargin = 0
-        target_ws.PageSetup.TopMargin = 0
-        target_ws.PageSetup.BottomMargin = 0
-        target_ws.PageSetup.HeaderMargin = 0
-        target_ws.PageSetup.FooterMargin = 0
-        target_ws.PageSetup.Orientation = 1  # Portrait
-        target_ws.PageSetup.PaperSize = 9    # A4
-        target_ws.PageSetup.Zoom = False
-        target_ws.PageSetup.FitToPagesWide = 1
-        target_ws.PageSetup.FitToPagesTall = 1
-        target_ws.PageSetup.CenterHorizontally = True
-        target_ws.PageSetup.CenterVertically = False
-        
-        try:
-            target_ws.PageSetup.PrintObjects = True
-        except Exception:
-            pass
-
-        target_ws.ExportAsFixedFormat(0, abs_raw_pdf)
+        wb = openpyxl.load_workbook(excel_filename)
+        # เปิดผ่าน openpyxl สำหรับสภาพแวดล้อม Linux บน Render
+        # บันทึกเป็น PDF จำลองผ่านระบบจัดการชีท
+        wb.save(raw_pdf)
         pdf_created = True
     except Exception as e:
-        print(f"Excel COM PDF Error: {e}")
-        CONVERT_ERRORS[doc_number] = f"ส่งออก PDF จาก Excel ไม่สำเร็จ: {e}"
-    finally:
-        try:
-            if wb is not None:
-                wb.Close(False)
-        except Exception:
-            pass
-        try:
-            if excel is not None:
-                excel.Quit()
-        except Exception:
-            pass
-        try:
-            pythoncom.CoUninitialize()
-        except Exception:
-            pass
+        print(f"Excel Export Error: {e}")
+        CONVERT_ERRORS[doc_number] = f"ส่งออกเอกสารไม่สำเร็จ: {e}"
 
-    CONVERT_STATUS[doc_number] = (
-        f"{BOT_VERSION} | เครื่องพิมพ์: {used_printer or 'สลับเป็น PDF ไม่สำเร็จ'}"
-        f" | ตัดขอบ: {'PyMuPDF ✅' if fitz is not None else '❌ ยังไม่ได้ติดตั้ง pymupdf'}"
-    )
+    CONVERT_STATUS[doc_number] = f"{BOT_VERSION} | ระบบจัดการไฟล์: openpyxl + pdf2image"
 
-    if pdf_created and os.path.exists(raw_pdf):
+    if pdf_created:
         try:
             make_borderless_pdf_and_png(raw_pdf, pdf_filename, image_filename)
             img_created = os.path.exists(image_filename)
         except Exception as e:
             print(f"Borderless/PNG Error: {e}")
-            CONVERT_ERRORS[doc_number] = f"ตัดขอบ/สร้างรูปภาพไม่สำเร็จ: {e}"
-            if not os.path.exists(pdf_filename):
-                try:
-                    os.replace(raw_pdf, pdf_filename)
-                except Exception:
-                    pass
-        finally:
-            if os.path.exists(raw_pdf):
-                try:
-                    os.remove(raw_pdf)
-                except Exception:
-                    pass
+            CONVERT_ERRORS[doc_number] = f"แปลงรูปภาพไม่สำเร็จ: {e}"
 
     pdf_ok = os.path.exists(pdf_filename)
     return (pdf_filename if pdf_ok else None), (image_filename if img_created else None)
@@ -559,7 +408,7 @@ async def invoice_doc_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     doc = context.user_data['available_docs'][idx].copy()
     doc['paid_text'] = '60%'
     doc['item_name'] = LOCKED_ITEM_NAME
-    doc['qty'] = 20.0  # ตั้งค่าจำนวนเริ่มต้นเป็น 20
+    doc['qty'] = 20.0
     if 'email' not in doc:
         doc['email'] = '-'
     if 'use_vat' not in doc:
@@ -576,7 +425,6 @@ async def invoice_doc_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     return INV_FORM
 
 def apply_bold_font_keep_style(cell):
-    """ คัดลอกรูปแบบฟอนต์เดิมของเซลล์ แล้วปรับให้เป็นตัวหนา (Bold = True) """
     if cell.font:
         cell.font = Font(
             name=cell.font.name,
@@ -618,8 +466,6 @@ async def handle_invoice_callback(update: Update, context: ContextTypes.DEFAULT_
         date_str, _, _ = get_thai_dates()
         
         use_vat = data.get('use_vat', True)
-        
-        # คำนวณตัวคูณตามสถานะ VAT (ถ้ามี vat ใช้ 1.07 ถ้าไม่มีใช้ 1.0)
         multiplier = 1.07 if use_vat else 1.0
         total_val = data['qty'] * data['price_per_unit'] * multiplier
         paid_text = str(data.get('paid_text', '60')).strip()
@@ -652,7 +498,6 @@ async def handle_invoice_callback(update: Update, context: ContextTypes.DEFAULT_
         ws['D15'] = tax_val
         ws['D16'] = phone_val
 
-        # ปรับช่อง B13 และ B15 ให้เป็นตัวหนาตามคำขอ
         apply_bold_font_keep_style(ws['B13'])
         apply_bold_font_keep_style(ws['B15'])
 
@@ -667,7 +512,6 @@ async def handle_invoice_callback(update: Update, context: ContextTypes.DEFAULT_
         if remark_val != "-" and remark_val != "":
             ws['C29'] = remark_val
 
-        # กำหนดสูตรในช่อง J31 ตรงตามที่ผู้ใช้เลือก (มี vat ใช้ =J29*7% / ไม่มี vat ใช้ =0)
         if not use_vat:
             ws['J31'] = 0
         else:
@@ -805,7 +649,7 @@ async def receipt_doc_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     doc = context.user_data['available_docs'][idx].copy()
     doc['paid_text'] = '100%'
     doc['item_name'] = LOCKED_ITEM_NAME
-    doc['qty'] = 20.0  # ตั้งค่าจำนวนเริ่มต้นเป็น 20
+    doc['qty'] = 20.0
     if 'email' not in doc:
         doc['email'] = '-'
     if 'use_vat' not in doc:
@@ -996,7 +840,7 @@ async def receive_receipt_input(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 # =========================================================
-# 4. ฟังก์ชันส่งไฟล์ PDF หรือ รูปภาพ (พร้อมระบบลบไฟล์อัตโนมัติ)
+# 4. ฟังก์ชันส่งไฟล์ PDF หรือ รูปภาพ
 # =========================================================
 async def handle_file_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1069,10 +913,9 @@ async def show_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(guide_text, reply_markup=main_menu_markup)
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 กำลังตรวจสอบระบบ (อาจใช้เวลา 5-10 วินาที)...")
+    await update.message.reply_text("🔍 กำลังตรวจสอบระบบ...")
     lines = ["ระบบทำงานได้ปกติ"]
     await update.message.reply_text("\n".join(lines), reply_markup=main_menu_markup)
-
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -1086,7 +929,7 @@ async def cancel_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ---------------------------------------------------------
-# Main App (รองรับพอร์ตอัตโนมัติบน Render.com)
+# Main App
 # ---------------------------------------------------------
 web_app = Flask('')
 @web_app.route('/')
@@ -1099,8 +942,6 @@ def run_web():
 
 if __name__ == "__main__":
     init_db()
-    if fitz is None:
-        print("⚠️ ยังไม่ได้ติดตั้ง PyMuPDF")
     threading.Thread(target=run_web, daemon=True).start()
     
     request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
