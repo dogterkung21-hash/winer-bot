@@ -21,7 +21,7 @@ from telegram.ext import (
 from telegram.request import HTTPXRequest
 
 # ==========================================
-# 🔑 Token บอท Telegram (ดึงจากระบบความปลอดภัยของ Render)
+# 🔑 Token บอท Telegram
 # ==========================================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 DB_FILE = "local_database.json"
@@ -84,6 +84,39 @@ def get_thai_dates():
     due_date_str = f"{due_date.day:02d}/{due_date.month:02d}/{due_thai_year}"
     return date_str, due_date_str, now.strftime("%Y-%m-%d")
 
+def thai_baht_text(amount):
+    """ ฟังก์ชันแปลงตัวเลขเป็นข้อความบาทไทย ป้องกันปัญหา #NAME? """
+    if amount is None:
+        return "(ศูนย์บาทถ้วน)"
+    num_text = ["ศูนย์", "หนึ่ง", "สอง", "สาม", "สี่", "ห้า", "หก", "เจ็ด", "แปด", "เก้า"]
+    unit_text = ["", "สิบ", "ร้อย", "พัน", "หมื่น", "แสน", "ล้าน"]
+    try:
+        amount_str = f"{float(amount):.2f}"
+        baht_part, _ = amount_str.split('.')
+        
+        def convert_chunk(n_str):
+            result = ""
+            length = len(n_str)
+            for i, digit in enumerate(n_str):
+                d = int(digit)
+                if d == 0:
+                    continue
+                power = length - i - 1
+                if power == 1 and d == 1:
+                    result += "สิบ"
+                elif power == 1 and d == 2:
+                    result += "ยี่สิบ"
+                elif power == 0 and d == 1 and length > 1 and n_str[-2] != '0':
+                    result += "เอ็ด"
+                else:
+                    result += num_text[d] + unit_text[power]
+            return result
+
+        baht_words = convert_chunk(baht_part)
+        return f"({baht_words}บาทถ้วน)" if baht_words else "(ศูนย์บาทถ้วน)"
+    except:
+        return "(ศูนย์บาทถ้วน)"
+
 try:
     from pdf2image import convert_from_path
 except ImportError:
@@ -111,8 +144,7 @@ def make_borderless_pdf_and_png(raw_pdf, final_pdf, final_png, png_dpi=200):
     img = Image.new('RGB', (800, 1100), color=(255, 255, 255))
     img.save(final_png, "PNG")
 
-
-BOT_VERSION = "v4-render-sheet-fix"
+BOT_VERSION = "v4-render-noname-fix"
 CONVERT_STATUS = {}
 
 def status_line(doc_number):
@@ -236,7 +268,7 @@ async def start_quotation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'remarks': '-'
     }
     await update.message.reply_text(
-        "📄 **ระบบออกใบเสนอราคา (ล้างข้อมูลเก่าเรียบร้อย)**\nกดปุ่มแก้ไขข้อมูล หรือกดสร้างเอกสารได้เลยครับ:",
+        "📄 **ระบบออกใบเสนอราคา**\nกดปุ่มแก้ไขข้อมูล หรือกดสร้างเอกสารได้เลยครับ:",
         reply_markup=build_quotation_keyboard(context.user_data['quot_data'])
     )
     return QUOT_FORM
@@ -399,7 +431,6 @@ def build_invoice_keyboard(data):
 async def start_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = load_db()
     docs = db.get("documents", [])
-
     if not docs:
         await update.message.reply_text("⚠️ ยังไม่มีประวัติเอกสาร กรุณาออกใบเสนอราคาก่อนครับ", reply_markup=main_menu_markup)
         return ConversationHandler.END
@@ -431,17 +462,13 @@ async def invoice_doc_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     doc['paid_text'] = '60%'
     doc['item_name'] = LOCKED_ITEM_NAME
     doc['qty'] = 20.0
-    if 'email' not in doc:
-        doc['email'] = '-'
-    if 'use_vat' not in doc:
-        doc['use_vat'] = True
-    if 'remarks' not in doc:
-        doc['remarks'] = '-'
+    if 'email' not in doc: doc['email'] = '-'
+    if 'use_vat' not in doc: doc['use_vat'] = True
+    if 'remarks' not in doc: doc['remarks'] = '-'
     context.user_data['inv_data'] = doc
 
     await query.message.edit_text(
-        f"✅ ดึงข้อมูลล่าสุดของ: **{doc['customer_name']}** เรียบร้อย\n"
-        "คุณสามารถกดปุ่มด้านล่างเพื่อ **แก้ไขข้อมูลส่วนต่างๆ** ก่อนสร้างอินวอยได้เลยครับ:",
+        f"✅ ดึงข้อมูลล่าสุดของ: **{doc['customer_name']}** เรียบร้อย\nคุณสามารถกดปุ่มด้านล่างเพื่อแก้ไขข้อมูลก่อนสร้างอินวอย:",
         reply_markup=build_invoice_keyboard(doc)
     )
     return INV_FORM
@@ -449,14 +476,9 @@ async def invoice_doc_selected(update: Update, context: ContextTypes.DEFAULT_TYP
 def apply_bold_font_keep_style(cell):
     if cell.font:
         cell.font = Font(
-            name=cell.font.name,
-            size=cell.font.size,
-            bold=True,
-            italic=cell.font.italic,
-            vertAlign=cell.font.vertAlign,
-            underline=cell.font.underline,
-            strike=cell.font.strike,
-            color=cell.font.color
+            name=cell.font.name, size=cell.font.size, bold=True,
+            italic=cell.font.italic, vertAlign=cell.font.vertAlign,
+            underline=cell.font.underline, strike=cell.font.strike, color=cell.font.color
         )
     else:
         cell.font = Font(bold=True)
@@ -530,6 +552,9 @@ async def handle_invoice_callback(update: Update, context: ContextTypes.DEFAULT_
         ws['H20'] = data['price_per_unit']
         ws['J36'] = paid_amt
 
+        # แก้ไขปัญหา #NAME? โดยการใส่ข้อความภาษาไทยแทนสูตร BAHTTEXT
+        ws['B29'] = thai_baht_text(total_val)
+
         remark_val = data.get('remarks', '-').strip()
         if remark_val != "-" and remark_val != "":
             ws['C29'] = remark_val
@@ -576,7 +601,7 @@ async def handle_invoice_callback(update: Update, context: ContextTypes.DEFAULT_
         "inv_edit_qty": ("qty", "กรุณาพิมพ์จำนวนสินค้าใหม่:"),
         "inv_edit_price": ("price_per_unit", "กรุณาพิมพ์ราคาต่อหน่วยใหม่:"),
         "inv_edit_remarks": ("remarks", "กรุณาพิมพ์หมายเหตุ:"),
-        "inv_edit_paid": ("paid_text", "กรุณาพิมพ์ยอดชำระ (เช่น 70% หรือใส่ยอดเงินบาท เช่น 50000):")
+        "inv_edit_paid": ("paid_text", "กรุณาพิมพ์ยอดชำระ (เช่น 70% หรือยอดเงินบาท):")
     }
 
     if action in field_map:
@@ -590,18 +615,13 @@ async def receive_invoice_input(update: Update, context: ContextTypes.DEFAULT_TY
     text = update.message.text.strip()
     field = context.user_data.get('inv_editing_field')
     data = context.user_data['inv_data']
-    
     if field:
         if field in ['qty', 'price_per_unit']:
             try: data[field] = float(text)
             except: pass
-        else:
-            data[field] = text
+        else: data[field] = text
 
-    await update.message.reply_text(
-        "🔄 อัปเดตข้อมูลอินวอยเรียบร้อยแล้ว:",
-        reply_markup=build_invoice_keyboard(data)
-    )
+    await update.message.reply_text("🔄 อัปเดตข้อมูลเรียบร้อยแล้ว:", reply_markup=build_invoice_keyboard(data))
     return INV_FORM
 
 REC_SELECT, REC_FORM, REC_INPUT = range(3)
@@ -636,7 +656,6 @@ def build_receipt_keyboard(data):
 async def start_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = load_db()
     docs = db.get("documents", [])
-
     if not docs:
         await update.message.reply_text("⚠️ ยังไม่มีประวัติเอกสาร กรุณาออกใบเสนอราคาก่อนครับ", reply_markup=main_menu_markup)
         return ConversationHandler.END
@@ -668,15 +687,12 @@ async def receipt_doc_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     doc['paid_text'] = '100%'
     doc['item_name'] = LOCKED_ITEM_NAME
     doc['qty'] = 20.0
-    if 'email' not in doc:
-        doc['email'] = '-'
-    if 'use_vat' not in doc:
-        doc['use_vat'] = True
+    if 'email' not in doc: doc['email'] = '-'
+    if 'use_vat' not in doc: doc['use_vat'] = True
     context.user_data['rec_data'] = doc
 
     await query.message.edit_text(
-        f"✅ ดึงข้อมูลล่าสุดของ: **{doc['customer_name']}** เรียบร้อย\n"
-        "คุณสามารถกดปุ่มด้านล่างเพื่อ **แก้ไขข้อมูลส่วนต่างๆ** ก่อนสร้างใบเสร็จได้เลยครับ:",
+        f"✅ ดึงข้อมูลล่าสุดของ: **{doc['customer_name']}** เรียบร้อย\nคุณสามารถกดปุ่มด้านล่างเพื่อแก้ไขข้อมูลก่อนสร้างใบเสร็จ:",
         reply_markup=build_receipt_keyboard(doc)
     )
     return REC_FORM
@@ -684,14 +700,9 @@ async def receipt_doc_selected(update: Update, context: ContextTypes.DEFAULT_TYP
 def apply_black_font_keep_style(cell):
     if cell.font:
         cell.font = Font(
-            name=cell.font.name,
-            size=cell.font.size,
-            bold=cell.font.bold,
-            italic=cell.font.italic,
-            vertAlign=cell.font.vertAlign,
-            underline=cell.font.underline,
-            strike=cell.font.strike,
-            color="000000"
+            name=cell.font.name, size=cell.font.size, bold=cell.font.bold,
+            italic=cell.font.italic, vertAlign=cell.font.vertAlign,
+            underline=cell.font.underline, strike=cell.font.strike, color="000000"
         )
     else:
         cell.font = Font(color="000000")
@@ -730,27 +741,20 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
         try:
             if '%' in paid_text:
                 pct = round(float(paid_text.replace('%', '').strip()))
-                if use_vat:
-                    paid_amt = (subtotal * 1.07) * (pct / 100)
-                else:
-                    paid_amt = subtotal * (pct / 100)
+                if use_vat: paid_amt = (subtotal * 1.07) * (pct / 100)
+                else: paid_amt = subtotal * (pct / 100)
             else:
                 val_num = float(paid_text.replace(',', '').strip())
                 if val_num <= 100 and "." not in paid_text:
                     pct = round(val_num)
-                    if use_vat:
-                        paid_amt = (subtotal * 1.07) * (pct / 100)
-                    else:
-                        paid_amt = subtotal * (pct / 100)
+                    if use_vat: paid_amt = (subtotal * 1.07) * (pct / 100)
+                    else: paid_amt = subtotal * (pct / 100)
                 else:
                     paid_amt = val_num
                     total_val = (subtotal * 1.07) if use_vat else subtotal
                     pct = round((paid_amt / total_val) * 100)
         except:
-            if use_vat:
-                paid_amt = subtotal * 1.07
-            else:
-                paid_amt = subtotal
+            paid_amt = (subtotal * 1.07) if use_vat else subtotal
             pct = 100
 
         wb = openpyxl.load_workbook("บริษัท วินเนอร์ เชียงราย จำกัด.xlsx")
@@ -768,10 +772,8 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
 
         ws['I10'] = f"เลขที่          {doc_number}"
         apply_black_font_keep_style(ws['I10'])
-
         ws['I11'] = f"วันที่           {date_str}"
         apply_black_font_keep_style(ws['I11'])
-
         ws['I12'] = f"ครบกำหนด   {due_str}"
         apply_black_font_keep_style(ws['I12'])
         
@@ -780,12 +782,14 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
         ws['H16'] = data['price_per_unit']
 
         ws['I29'] = subtotal
-        if not use_vat:
-            ws['I30'] = 0
-        else:
-            ws['I30'] = "=I29*7%"
+        if not use_vat: ws['I30'] = 0
+        else: ws['I30'] = "=I29*7%"
 
         ws['I32'] = paid_amt
+
+        # แก้ไขปัญหา #NAME? โดยการใส่ข้อความภาษาไทยแทนสูตร BAHTTEXT ในใบเสร็จ
+        total_full_val = (subtotal * 1.07) if use_vat else subtotal
+        ws['B29'] = thai_baht_text(total_full_val)
 
         formatted_amt = f"{paid_amt:,.2f}"
         ws['C30'] = f"**ลูกค้าชำระยอด {pct}% จากยอดเต็มเป็นจำนวนเงิน {formatted_amt} บาท**"
@@ -826,7 +830,7 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
         "rec_edit_email": ("email", "กรุณาพิมพ์อีเมลใหม่:"),
         "rec_edit_qty": ("qty", "กรุณาพิมพ์จำนวนสินค้าใหม่:"),
         "rec_edit_price": ("price_per_unit", "กรุณาพิมพ์ราคาต่อหน่วยใหม่:"),
-        "rec_edit_paid": ("paid_text", "กรุณาพิมพ์ยอดชำระเงินจริง (เช่น 164700 บาท หรือพิมพ์ % เช่น 45%):")
+        "rec_edit_paid": ("paid_text", "กรุณาพิมพ์ยอดชำระเงินจริง (เช่น 164700 หรือ 45%):")
     }
 
     if action in field_map:
@@ -840,20 +844,13 @@ async def receive_receipt_input(update: Update, context: ContextTypes.DEFAULT_TY
     text = update.message.text.strip()
     field = context.user_data.get('rec_editing_field')
     data = context.user_data['rec_data']
-    
     if field:
         if field in ['qty', 'price_per_unit']:
-            try:
-                data[field] = float(text)
-            except ValueError:
-                pass
-        else:
-            data[field] = text
+            try: data[field] = float(text)
+            except ValueError: pass
+        else: data[field] = text
 
-    await update.message.reply_text(
-        "🔄 อัปเดตข้อมูลใบเสร็จรับเงินเรียบร้อยแล้ว:",
-        reply_markup=build_receipt_keyboard(data)
-    )
+    await update.message.reply_text("🔄 อัปเดตข้อมูลเรียบร้อยแล้ว:", reply_markup=build_receipt_keyboard(data))
     return REC_FORM
 
 async def handle_file_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -867,16 +864,12 @@ async def handle_file_selection_callback(update: Update, context: ContextTypes.D
         if pdf_file and os.path.exists(pdf_file):
             with open(pdf_file, 'rb') as f:
                 await query.message.reply_document(document=f, caption=f"📄 ไฟล์ PDF เอกสารเลขที่ {doc_num}", reply_markup=main_menu_markup)
-            try:
-                os.remove(pdf_file)
-            except Exception:
-                pass
+            try: os.remove(pdf_file)
+            except: pass
             img_partner = f"{doc_num}.png"
             if os.path.exists(img_partner):
-                try:
-                    os.remove(img_partner)
-                except Exception:
-                    pass
+                try: os.remove(img_partner)
+                except: pass
         else:
             err = CONVERT_ERRORS.get(doc_num, "ไม่ทราบสาเหตุ")
             await query.message.reply_text(f"⚠️ ไม่พบไฟล์ PDF หรือถูกส่งไปแล้ว\nสาเหตุ: {err}", reply_markup=main_menu_markup)
@@ -887,16 +880,12 @@ async def handle_file_selection_callback(update: Update, context: ContextTypes.D
         if img_file and os.path.exists(img_file):
             with open(img_file, 'rb') as f:
                 await query.message.reply_photo(photo=f, caption=f"🖼️ รูปภาพเอกสารเลขที่ {doc_num}", reply_markup=main_menu_markup)
-            try:
-                os.remove(img_file)
-            except Exception:
-                pass
+            try: os.remove(img_file)
+            except: pass
             pdf_partner = f"{doc_num}.pdf"
             if os.path.exists(pdf_partner):
-                try:
-                    os.remove(pdf_partner)
-                except Exception:
-                    pass
+                try: os.remove(pdf_partner)
+                except: pass
         else:
             err = CONVERT_ERRORS.get(doc_num, "ไม่ทราบสาเหตุ")
             await query.message.reply_text(f"⚠️ ไม่พบไฟล์รูปภาพหรือถูกส่งไปแล้ว\nสาเหตุ: {err}", reply_markup=main_menu_markup)
