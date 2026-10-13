@@ -1,0 +1,7 @@
+python-telegram-bot
+pandas
+requests
+openpyxl
+flask
+reportlab
+pdf2image
