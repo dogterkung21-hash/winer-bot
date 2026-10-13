@@ -2,6 +2,7 @@ import os
 import re
 import json
 import threading
+import subprocess
 from datetime import datetime, timedelta
 import openpyxl
 from openpyxl.styles import Font
@@ -83,7 +84,7 @@ def get_thai_dates():
     due_date_str = f"{due_date.day:02d}/{due_date.month:02d}/{due_thai_year}"
     return date_str, due_date_str, now.strftime("%Y-%m-%d")
 
-# --- pdf2image: ใช้แปลง PDF เป็นรูปภาพบน Linux / Render ---
+# --- ตัวแปลง PDF และรูปภาพ รองรับ Linux / Render ---
 try:
     from pdf2image import convert_from_path
 except ImportError:
@@ -106,14 +107,13 @@ def make_borderless_pdf_and_png(raw_pdf, final_pdf, final_png, png_dpi=200):
             pil_img.save(final_png, "PNG")
             return
         except Exception as e:
-            print(f"pdf2image conversion error: {e}")
+            print(f"pdf2image error: {e}")
     
-    # สำรองถ้าแปลงรูปไม่ได้ บันทึกเป็นรูปว่างหรือข้าม
     img = Image.new('RGB', (800, 1100), color=(255, 255, 255))
     img.save(final_png, "PNG")
 
 
-BOT_VERSION = "v4-render-pdf2image"
+BOT_VERSION = "v4-render-libreoffice"
 CONVERT_STATUS = {}
 
 def status_line(doc_number):
@@ -127,26 +127,45 @@ def convert_single_sheet_to_pdf_and_image(excel_filename, target_sheet_name, doc
     pdf_created, img_created = False, False
     CONVERT_ERRORS.pop(doc_number, None)
 
-    wb = None
+    # ใช้ LibreOffice แปลง Excel เป็น PDF บน Linux / Render
     try:
-        wb = openpyxl.load_workbook(excel_filename)
-        # เปิดผ่าน openpyxl สำหรับสภาพแวดล้อม Linux บน Render
-        # บันทึกเป็น PDF จำลองผ่านระบบจัดการชีท
-        wb.save(raw_pdf)
-        pdf_created = True
+        cmd = [
+            "libreoffice",
+            "--headless",
+            "--convert-to", "pdf",
+            "--outdir", os.getcwd(),
+            excel_filename
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        generated_pdf = os.path.splitext(os.path.basename(excel_filename))[0] + ".pdf"
+        if os.path.exists(generated_pdf):
+            os.replace(generated_pdf, raw_pdf)
+            pdf_created = True
     except Exception as e:
-        print(f"Excel Export Error: {e}")
-        CONVERT_ERRORS[doc_number] = f"ส่งออกเอกสารไม่สำเร็จ: {e}"
+        print(f"LibreOffice PDF Convert Error: {e}")
+        CONVERT_ERRORS[doc_number] = f"ส่งออก PDF ไม่สำเร็จ: {e}"
 
-    CONVERT_STATUS[doc_number] = f"{BOT_VERSION} | ระบบจัดการไฟล์: openpyxl + pdf2image"
+    CONVERT_STATUS[doc_number] = f"{BOT_VERSION} | LibreOffice + pdf2image"
 
-    if pdf_created:
+    if pdf_created and os.path.exists(raw_pdf):
         try:
             make_borderless_pdf_and_png(raw_pdf, pdf_filename, image_filename)
             img_created = os.path.exists(image_filename)
         except Exception as e:
             print(f"Borderless/PNG Error: {e}")
             CONVERT_ERRORS[doc_number] = f"แปลงรูปภาพไม่สำเร็จ: {e}"
+            if not os.path.exists(pdf_filename):
+                try:
+                    os.replace(raw_pdf, pdf_filename)
+                except Exception:
+                    pass
+        finally:
+            if os.path.exists(raw_pdf):
+                try:
+                    os.remove(raw_pdf)
+                except Exception:
+                    pass
 
     pdf_ok = os.path.exists(pdf_filename)
     return (pdf_filename if pdf_ok else None), (image_filename if img_created else None)
