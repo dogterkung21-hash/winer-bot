@@ -84,7 +84,6 @@ def get_thai_dates():
     due_date_str = f"{due_date.day:02d}/{due_date.month:02d}/{due_thai_year}"
     return date_str, due_date_str, now.strftime("%Y-%m-%d")
 
-# --- ตัวแปลง PDF และรูปภาพ รองรับ Linux / Render ---
 try:
     from pdf2image import convert_from_path
 except ImportError:
@@ -113,7 +112,7 @@ def make_borderless_pdf_and_png(raw_pdf, final_pdf, final_png, png_dpi=200):
     img.save(final_png, "PNG")
 
 
-BOT_VERSION = "v4-render-libreoffice"
+BOT_VERSION = "v4-render-sheet-fix"
 CONVERT_STATUS = {}
 
 def status_line(doc_number):
@@ -127,26 +126,40 @@ def convert_single_sheet_to_pdf_and_image(excel_filename, target_sheet_name, doc
     pdf_created, img_created = False, False
     CONVERT_ERRORS.pop(doc_number, None)
 
-    # ใช้ LibreOffice แปลง Excel เป็น PDF บน Linux / Render
+    sheet_only_excel = f"single_sheet_{doc_number}.xlsx"
+
     try:
+        wb = openpyxl.load_workbook(excel_filename)
+        for sheet_name in wb.sheetnames:
+            if sheet_name != target_sheet_name:
+                del wb[sheet_name]
+        wb.save(sheet_only_excel)
+
         cmd = [
             "libreoffice",
             "--headless",
             "--convert-to", "pdf",
             "--outdir", os.getcwd(),
-            excel_filename
+            sheet_only_excel
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
-        generated_pdf = os.path.splitext(os.path.basename(excel_filename))[0] + ".pdf"
+        generated_pdf = os.path.splitext(os.path.basename(sheet_only_excel))[0] + ".pdf"
         if os.path.exists(generated_pdf):
             os.replace(generated_pdf, raw_pdf)
             pdf_created = True
+            
     except Exception as e:
         print(f"LibreOffice PDF Convert Error: {e}")
         CONVERT_ERRORS[doc_number] = f"ส่งออก PDF ไม่สำเร็จ: {e}"
+    finally:
+        if os.path.exists(sheet_only_excel):
+            try:
+                os.remove(sheet_only_excel)
+            except Exception:
+                pass
 
-    CONVERT_STATUS[doc_number] = f"{BOT_VERSION} | LibreOffice + pdf2image"
+    CONVERT_STATUS[doc_number] = f"{BOT_VERSION} | Sheet: {target_sheet_name}"
 
     if pdf_created and os.path.exists(raw_pdf):
         try:
@@ -170,9 +183,6 @@ def convert_single_sheet_to_pdf_and_image(excel_filename, target_sheet_name, doc
     pdf_ok = os.path.exists(pdf_filename)
     return (pdf_filename if pdf_ok else None), (image_filename if img_created else None)
 
-# ---------------------------------------------------------
-# เมนูหลัก
-# ---------------------------------------------------------
 main_menu_markup = ReplyKeyboardMarkup(
     [
         ["📄 ออกใบเสนอราคา", "📑 ออกอินวอย (Invoice)"],
@@ -182,9 +192,6 @@ main_menu_markup = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# =========================================================
-# 1. ออกใบเสนอราคา (Quotation)
-# =========================================================
 QUOT_FORM, INPUT_FIELD = range(2)
 
 def build_quotation_keyboard(data):
@@ -359,10 +366,6 @@ async def receive_quotation_input(update: Update, context: ContextTypes.DEFAULT_
     )
     return QUOT_FORM
 
-
-# =========================================================
-# 2. ออกอินวอย (Invoice)
-# =========================================================
 INV_SELECT, INV_FORM, INV_INPUT = range(3)
 
 def build_invoice_keyboard(data):
@@ -601,10 +604,6 @@ async def receive_invoice_input(update: Update, context: ContextTypes.DEFAULT_TY
     )
     return INV_FORM
 
-
-# =========================================================
-# 3. ออกใบเสร็จรับเงิน (Receipt)
-# =========================================================
 REC_SELECT, REC_FORM, REC_INPUT = range(3)
 
 def build_receipt_keyboard(data):
@@ -857,10 +856,6 @@ async def receive_receipt_input(update: Update, context: ContextTypes.DEFAULT_TY
     )
     return REC_FORM
 
-
-# =========================================================
-# 4. ฟังก์ชันส่งไฟล์ PDF หรือ รูปภาพ
-# =========================================================
 async def handle_file_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -906,9 +901,6 @@ async def handle_file_selection_callback(update: Update, context: ContextTypes.D
             err = CONVERT_ERRORS.get(doc_num, "ไม่ทราบสาเหตุ")
             await query.message.reply_text(f"⚠️ ไม่พบไฟล์รูปภาพหรือถูกส่งไปแล้ว\nสาเหตุ: {err}", reply_markup=main_menu_markup)
 
-# =========================================================
-# 5. รายชื่อลูกค้า และ คู่มือการใช้งาน
-# =========================================================
 async def show_customers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = load_db()
     customers = db.get("customers", [])
@@ -947,9 +939,6 @@ async def cancel_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ ยกเลิกรายการเรียบร้อย", reply_markup=main_menu_markup)
     return ConversationHandler.END
 
-# ---------------------------------------------------------
-# Main App
-# ---------------------------------------------------------
 web_app = Flask('')
 @web_app.route('/')
 def home():
